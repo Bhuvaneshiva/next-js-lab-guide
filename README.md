@@ -3127,3 +3127,601 @@ export default AddReview;
 ```tsx
 el = <AddReview productId={_idRouter[0]} />;
 ```
+
+## Step 34: Create backend services to get User's cart, update cart
+
+-   `src/data/services/cart.ts`
+
+```tsx
+import mongoose from "@/data/init";
+import { IUserCartItem } from "@/types/user";
+
+const User = mongoose.model("User");
+const Product = mongoose.model("Product");
+
+export const getCart = async (email: string) => {
+    const data = await User.findOne({ email });
+
+    const cart = data.cart;
+
+    const productIds = cart.map(
+        (cartItem: IUserCartItem) => cartItem.productId
+    );
+
+    const products = await Product.find({
+        _id: {
+            $in: productIds,
+        },
+    }).select("_id title price image");
+
+    const returnedCart = data.cart.map((cartItem: IUserCartItem) => {
+        const product = products.find(
+            (p) => (p as any)._id.toString() === cartItem.productId
+        );
+
+        return {
+            product: {
+                _id: product._id?.toString() || "",
+                title: product.title || "",
+                price: product.price || "",
+                image: product.image || "",
+            },
+            quantity: cartItem.quantity,
+        };
+    });
+
+    return returnedCart;
+};
+
+export const updateCart = async (email: string, cart: IUserCartItem) => {
+    const data = await User.findOneAndUpdate(
+        { email },
+        {
+            cart: cart,
+        },
+        { new: true }
+    );
+    const dataJson = data.toJSON({ flattenObjectIds: true });
+    delete dataJson.password;
+
+    return dataJson.cart;
+};
+```
+
+## Step 35: Define API routes to work with the cart (get cart, update cart)
+
+-   `src/pages/api/cart/index.ts`
+
+```tsx
+import type { NextApiHandler, NextApiRequest, NextApiResponse } from "next";
+import { getSession } from "next-auth/client";
+
+import { getCart, updateCart } from "@/data/services/cart";
+
+const handler: NextApiHandler = async (
+    req: NextApiRequest,
+    res: NextApiResponse
+) => {
+    const { method } = req;
+
+    const session = await getSession({ req: req });
+
+    if (!session || !session.user) {
+        res.status(401).json({ message: "Not authenticated!" });
+        return;
+    }
+
+    const email = session.user.email as string;
+
+    switch (method) {
+        case "GET":
+            try {
+                const cart = await getCart(email);
+                return res.status(200).json({
+                    status: "success",
+                    message: {
+                        cart,
+                    },
+                });
+            } catch (error) {
+                return res.status(500).json({
+                    status: "error",
+                    message: (error as Error).message,
+                });
+            }
+        case "PUT":
+            const cart = req.body;
+
+            try {
+                const updatedCart = await updateCart(email, cart);
+                return res.status(200).json({
+                    status: "success",
+                    message: {
+                        cart: updatedCart,
+                    },
+                });
+            } catch (error) {
+                return res.status(500).json({
+                    status: "error",
+                    message: (error as Error).message,
+                });
+            }
+        default:
+            return res.status(405).json({
+                status: "error",
+                message: `METHOD=${method} not allowed`,
+            });
+    }
+};
+
+export default handler;
+```
+
+## Step 36: Define frontend service methods to work with the cart API (get cart, update cart)
+
+-   `src/services/cart.ts`
+
+```tsx
+import axios from "axios";
+import { ICartItem } from "@/types/cart";
+
+type IGetOrPutCartResponse = {
+    status: "success" | "error";
+    message: {
+        cart: ICartItem[];
+    };
+};
+
+export const getCart = async () => {
+    const response = await axios.get<IGetOrPutCartResponse>(`/api/cart`);
+    return response.data;
+};
+
+export const updateCart = async (
+    cart: { productId: string; quantity: number }[]
+) => {
+    const response = await axios.put<IGetOrPutCartResponse>(`/api/cart`, cart, {
+        headers: {
+            "Content-Type": "application/json",
+        },
+    });
+    return response.data;
+};
+```
+
+-   `src/types/cart.ts` - Define the `ICartItem` type to go with this service
+
+```tsx
+import { IProduct } from "./product";
+
+export interface ICartItem {
+    product: string | IProduct;
+    quantity: number;
+}
+```
+
+## Step 37: Define a context object to share cart information in the app
+
+-   `src/context/shopping-cart.tsx`
+
+```tsx
+import { createContext, useContext } from "react";
+import { ICartItem } from "@/types/cart";
+
+const CartContext = createContext({
+    cart: [] as any[],
+    changeQuantity: (productId: string | undefined, quantity: number) => {},
+    setCart: (cart: ICartItem[]) => {},
+});
+
+export const CartProvider = CartContext.Provider;
+
+export const useCart = () => useContext(CartContext);
+```
+
+## Step 38: Set up the context provider
+
+-   The \_app.tsx wraps the complete app's UI, and is a good place to maintain the cart state and provide to the entire appliction using the shopping-cart context
+-   `src/pages/_app.tsx`
+-   Add the necessary imports
+
+```tsx
+import { useState } from "react";
+import { CartProvider } from "@/context/shopping-cart";
+import { updateCart } from "@/services/cart";
+```
+
+-   Define the state maintaining the shopping cart and methods to make changes to this state. Gather all the information to be shared into a value object
+
+```tsx
+const [cart, setCart] = useState<any>([]);
+
+const changeQuantity = async (
+    productId: string | undefined,
+    quantityToAdd: number
+) => {
+    if (!productId) {
+        return;
+    }
+
+    let newCart = [...cart];
+
+    const index = newCart.findIndex((item) => item.productId === productId);
+
+    if (index >= 0) {
+        newCart[index] = {
+            ...newCart[index],
+            quantity: newCart[index].quantity + quantityToAdd,
+        };
+    } else {
+        newCart.push({ productId: productId, quantity: quantityToAdd });
+    }
+
+    newCart = newCart.filter((item) => item.quantity > 0);
+
+    const cartToSend = newCart.map((item) => {
+        return {
+            productId: item.product ? item.product._id : item.productId,
+            quantity: item.quantity,
+        };
+    });
+
+    const response = await updateCart(cartToSend);
+
+    const updatedCart = response.message.cart;
+
+    setCart(updatedCart);
+
+    return updatedCart;
+};
+
+const value = {
+    cart,
+    changeQuantity,
+    setCart,
+};
+```
+
+-   Share the shopping cart value using the shopping cart context object
+
+```tsx
+<AppCacheProvider {...props}>
+    <CartProvider value={value}>
+        {/* rest of UI */}
+    </CartProvider>
+<AppCacheProvider>
+```
+
+## Step 39: Populate the shopping cart from within the main navigation component, when user logs in
+
+-   `src/components/main-navigation/main-navigation.tsx`
+-   Add the necessary imports
+
+```tsx
+import Badge from "@mui/material/Badge";
+import ShoppingCart from "@mui/icons-material/ShoppingCart";
+import { useCart } from "@/context/shopping-cart";
+import { getCart } from "@/services/cart";
+import { useEffect } from "react";
+```
+
+-   Update the shopping cart when user logs in
+
+```tsx
+// required values from the shopping cart context
+const { cart, setCart } = useCart();
+
+// Fetch the cart on page load, and every time user logs in (session value changes and is set)
+useEffect(() => {
+    const fetchCart = async () => {
+        const data = await getCart();
+        console.log("fetchCart data in main-navigation = ", data);
+        setCart(
+            data.message.cart.map((item) => {
+                return {
+                    productId: item.product._id,
+                    quantity: item.quantity,
+                };
+            })
+        );
+    };
+
+    if (session) {
+        fetchCart();
+    }
+}, [session, setCart]);
+```
+
+-   Add the shopping cart icon (which shows the cart status) before the user Avatar
+
+```tsx
+{
+    session && !loading && (
+        <Badge
+            badgeContent={cart.length}
+            color="secondary"
+            sx={{
+                paddingRight: "-24px",
+                marginRight: "24px",
+                marginTop: "8px",
+            }}
+        >
+            <IconButton
+                aria-label="add to favorites"
+                sx={{ color: "white" }}
+                onClick={() => handleCloseUserMenu("/cart")}
+            >
+                <ShoppingCart />
+            </IconButton>
+        </Badge>
+    );
+}
+```
+
+-   You should see the number of items in the user's shopping cart when the user logs in
+
+## Step 40: Add a cart icon on list page items, through which user can add to the cart
+
+-   `src/components/products-list/items/item.tsx`
+-   Add the necessary imports
+
+```tsx
+import { useCart } from "@/context/shopping-cart";
+import { getSession } from "next-auth/client";
+import { useState, useEffect } from "react";
+import ShoppingCart from "@mui/icons-material/ShoppingCart";
+```
+
+-   Add code to get the `changeQuantity()` method from the shopping cart context. Also get session information using `getSession()` and maintain it in state
+
+```tsx
+const { changeQuantity } = useCart();
+
+// get session information using getSession(), and maintain the data in state
+const [loading, setLoading] = useState(true);
+const [session, setSession] = useState<any>(null);
+
+useEffect(() => {
+    getSession({}).then((session) => {
+        if (session) {
+            setSession(session);
+        }
+
+        setLoading(false);
+    });
+}, []);
+```
+
+-   Add a shopping cart icon (after the ShareIcon) to add the product to the cart if session exists (user is logged in)
+
+```tsx
+{
+    /* Add a shopping cart icon to add the product to the cart if session exists (user is logged in) */
+}
+{
+    session && !loading && (
+        <IconButton aria-label="add to cart">
+            <ShoppingCart onClick={() => changeQuantity(product._id, 1)} />
+        </IconButton>
+    );
+}
+```
+
+-   After logging in you can find the shopping cart icon on the product list items. Clicking them adds to the cart (note the change in number of items in the main navigation menu).
+
+## Step 41: Show the ShoppingCart page
+
+-   `src.pages/cart.tsx` - We render this on the server-side using `getServerSideProps()`. This is ideal as the shopping cart is a very dynamic (fast-changing) page. SSG is not a good fit for it. We also make sure during SSR that if the user is not logged in, the cart page cannot be accessed.
+
+```tsx
+import { NextPageContext } from "next";
+import { getSession } from "next-auth/client";
+import Head from "next/head";
+
+import Cart from "@/components/cart/cart";
+import { ICartItem } from "@/types/cart";
+
+import { getCart } from "@/data/services/cart";
+
+type Props = {
+    cart: ICartItem[];
+};
+
+export default function CartPage({ cart }: Props) {
+    return (
+        <>
+            <Head>
+                <title>Shopping cart | Mantra Store</title>
+                <meta name="description" content="Shopping cart" />
+            </Head>
+
+            <Cart cart={cart} />
+        </>
+    );
+}
+
+export const getServerSideProps = async (context: NextPageContext) => {
+    const session = await getSession({ req: context.req });
+
+    if (!session || !session.user || !session.user.email) {
+        return {
+            redirect: {
+                destination: "/auth",
+                permanent: false,
+            },
+        };
+    }
+
+    const email = session.user.email;
+
+    const cart = await getCart(email);
+
+    return {
+        props: { cart },
+    };
+};
+```
+
+-   `src/components/cart/cart.tsx` - We create the `Cart` component that is used in the CartPage.
+
+```tsx
+import { useState, useEffect } from "react";
+import Image from "next/image";
+import Box from "@mui/material/Box";
+import Divider from "@mui/material/Divider";
+import {
+    TableContainer,
+    Table,
+    TableHead,
+    TableBody,
+    TableRow,
+    TableCell,
+    Paper,
+    TableFooter,
+    IconButton,
+    Button,
+} from "@mui/material";
+import Add from "@mui/icons-material/Add";
+import Remove from "@mui/icons-material/Remove";
+import { useCart } from "@/context/shopping-cart";
+
+import { ICartItem } from "@/types/cart";
+import { IProduct } from "@/types/product";
+import { getCart } from "@/services/cart";
+
+type Props = {
+    cart: ICartItem[];
+};
+
+function Cart({ cart }: Props) {
+    const { changeQuantity } = useCart();
+
+    if (!cart || cart.length === 0) {
+        return (
+            <Box
+                sx={{
+                    display: "flex",
+                    justifyContent: "center",
+                    alignItems: "center",
+                    mx: 4,
+                }}
+            >
+                Cart is empty
+            </Box>
+        );
+    }
+
+    const total = cart.reduce(
+        (acc, item) => acc + (item.product as IProduct).price * item.quantity,
+        0
+    );
+    console.log("cart = ", cart);
+
+    return (
+        <section>
+            <h1>Shopping cart</h1>
+            <Divider sx={{ my: 3 }} />
+            <TableContainer component={Paper}>
+                <Table sx={{ minWidth: 650 }} aria-label="Shopping cart">
+                    <TableHead>
+                        <TableRow>
+                            <TableCell align="center">S. No.</TableCell>
+                            <TableCell>Image</TableCell>
+                            <TableCell>Name</TableCell>
+                            <TableCell align="center">Quantity</TableCell>
+                            <TableCell align="right">Price ($)</TableCell>
+                            <TableCell align="right">Total Price ($)</TableCell>
+                        </TableRow>
+                    </TableHead>
+                    <TableBody>
+                        {cart.map(({ product, quantity }: any, idx: number) => (
+                            <TableRow
+                                key={product._id}
+                                sx={{
+                                    "&:last-child td, &:last-child th": {
+                                        border: 0,
+                                    },
+                                }}
+                            >
+                                <TableCell
+                                    component="th"
+                                    scope="row"
+                                    align="center"
+                                >
+                                    {idx + 1}
+                                </TableCell>
+                                <TableCell>
+                                    <Image
+                                        src={product.image}
+                                        alt={product.title}
+                                        width={48}
+                                        height={48}
+                                    />
+                                </TableCell>
+                                <TableCell>{product.title}</TableCell>
+                                <TableCell align="center">
+                                    <IconButton
+                                        aria-label="decrease quantity"
+                                        size="small"
+                                        sx={{
+                                            mr: 1,
+                                        }}
+                                        onClick={async () => {
+                                            const data = await changeQuantity(
+                                                product._id,
+                                                -1
+                                            );
+                                            window.location.reload();
+                                        }}
+                                    >
+                                        <Remove
+                                            color="success"
+                                            fontSize="small"
+                                        />
+                                    </IconButton>
+                                    {quantity}
+                                    <IconButton
+                                        aria-label="increase quantity"
+                                        size="small"
+                                        sx={{
+                                            mx: 1,
+                                        }}
+                                        onClick={async () => {
+                                            const data = await changeQuantity(
+                                                product._id,
+                                                1
+                                            );
+                                            window.location.reload();
+                                        }}
+                                    >
+                                        <Add color="success" fontSize="small" />
+                                    </IconButton>
+                                </TableCell>
+                                <TableCell align="right">
+                                    {product.price.toFixed(2)}
+                                </TableCell>
+                                <TableCell align="right">
+                                    {(quantity * product.price).toFixed(2)}
+                                </TableCell>
+                            </TableRow>
+                        ))}
+                    </TableBody>
+                    <TableFooter>
+                        <TableRow>
+                            <TableCell colSpan={4} />
+                            <TableCell align="right" sx={{ fontSize: "1em" }}>
+                                Total
+                            </TableCell>
+                            <TableCell align="right" sx={{ fontSize: "1em" }}>
+                                {total.toFixed(2)}
+                            </TableCell>
+                        </TableRow>
+                    </TableFooter>
+                </Table>
+            </TableContainer>
+        </section>
+    );
+}
+
+export default Cart;
+```
