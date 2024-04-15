@@ -1892,7 +1892,7 @@ const ProductReviews = ({ productId, reviews }: Props) => {
 -   Further steps like adding review, adding product, adding product to cart requires a user to be authenticated. We can implement authentication using JWT using jsonwebtoken library ourselves, but Next JS apps usually implement authentication/authorization using `next-auth`. We specifically use v3 (although latest is v4). We also need to force installation as this library has peer dependency of React/ReactDOM v16, v17, but we are using React v18. Note that v4 would be preferable, but author (Prashanth Puranik) prefers v3 as he is not yet familiar with v4. We also install bcryptjs as this is needed for password hashing
 
 ```
-npm i --force next-auth@3.15.0 bcryptjs
+npm i --force next-auth@3.15.0 bcryptjs @types/bcryptjs
 ```
 
 -   We start by building the login/register page to be shown on `/auth`
@@ -1964,7 +1964,7 @@ function AuthForm() {
                     />
                 </Box>
                 <Box sx={{ my: 2 }}>
-                    <Button variant="outlined">
+                    <Button variant="outlined" type="submit">
                         {isLogin ? "Login" : "Create Account"}
                     </Button>
                     <Box sx={{ my: 2 }}>
@@ -2302,7 +2302,635 @@ function ResponsiveAppBar() {
 export default ResponsiveAppBar;
 ```
 
-## Step xyz: Adding a review
+## Step 25: Set up the User model, and DB services to register a user
+
+-   `src/types/user.ts` - Set up the Types required to set up the User model using Mongoose. Since the `User` documents also store the cart for the user (array of cart items), we will define how a cart item looks like.
+
+```ts
+export interface IUserCartItem {
+    productId: string;
+    quantity: number;
+}
+
+export interface IUser {
+    email: string;
+    username: string;
+    password: string;
+    role?: "customer" | "admin";
+    cart?: IUserCartItem[];
+}
+```
+
+-   `src/data/models/User.ts` - Set up a User model
+
+```ts
+import mongoose from "mongoose";
+import { IUserCartItem, IUser } from "@/types/user";
+
+export const CartItem = new mongoose.Schema<IUserCartItem>({
+    productId: {
+        type: String,
+        required: true,
+        unique: true,
+    },
+    quantity: {
+        type: Number,
+        default: 1,
+    },
+});
+
+export const schema = new mongoose.Schema<IUser>({
+    email: {
+        type: String,
+        required: true,
+        unique: true,
+        lowercase: true,
+    },
+    username: {
+        type: String,
+        required: true,
+        unique: true,
+    },
+    password: {
+        type: String,
+        required: true,
+    },
+    role: {
+        type: String,
+        enum: ["customer", "admin"],
+        default: "customer",
+    },
+    cart: {
+        type: [CartItem],
+        default: [],
+    },
+});
+
+if (!mongoose.modelNames().includes("User")) {
+    mongoose.model<IUser>("User", schema);
+}
+```
+
+-   `src/data/services/auth.ts` - Define a service method to register a new user
+
+```ts
+
+```
+
+-   `src/data/init.ts` - Register the User model by running the model file
+
+```ts
+import "./models/User";
+```
+
+## Step 26: Create the register API route
+
+-   `src/pages/api/auth/register` - Set up the API to register a new user
+
+```tsx
+import type { NextApiHandler, NextApiRequest, NextApiResponse } from "next";
+import { IUser } from "@/types/user";
+import { IApiResponse, IErrorMessage } from "@/types/api";
+import { register } from "@/data/services/auth";
+
+const handler: NextApiHandler = async (
+    req: NextApiRequest,
+    res: NextApiResponse<IApiResponse<IUser> | IErrorMessage>
+) => {
+    const { method } = req;
+
+    switch (method) {
+        case "POST":
+            const user = req.body;
+
+            try {
+                const registeredUser = await register(user);
+                return res.status(201).json({
+                    status: "success",
+                    message: registeredUser,
+                });
+            } catch (error) {
+                return res.status(500).json({
+                    status: "error",
+                    message: (error as Error).message,
+                });
+            }
+        default:
+            return res.status(405).json({
+                status: "error",
+                message: `METHOD=${method} not allowed`,
+            });
+    }
+};
+
+export default handler;
+```
+
+## Step 27: Set up frontend service for registration and consume it in the auth-form to enable registration
+
+-   `src/services/auth.ts` - Set up the service method for registration from the frontend.
+
+```ts
+import { ICredentials, IRegister } from "@/types/user";
+import axios from "axios";
+
+type IRegisterResponse = {
+    status: "success" | "error";
+    message: {
+        email: string;
+        role: "customer" | "admin";
+    };
+};
+
+export const register = async (credentials: IRegister) => {
+    const response = await axios.post<IRegisterResponse>(
+        `/api/auth/register`,
+        credentials,
+        {
+            headers: {
+                "Content-Type": "application/json",
+            },
+        }
+    );
+    return response.data;
+};
+```
+
+-   `src/components/auth/auth-form.tsx` - Make the API call when a new user tries to register
+
+-   Import the service
+
+```tsx
+import { register } from "@/services/auth";
+```
+
+-   Add the following method in the compoent
+
+```tsx
+async function submitHandler(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    try {
+        // registration
+        if (!isLogin) {
+            await register({ email, username, password });
+            alert(username + " registered successfully");
+            setIsLogin(true);
+            return;
+        }
+    } catch (error) {
+        alert((error as Error).message);
+    }
+}
+```
+
+-   Set it up as the form submit event handler
+
+```tsx
+<form onSubmit={submitHandler}>{/* for ui */}</form>
+```
+
+-   With this a user should be able to create a new account
+
+## Step 28: Create login and other API endpoints using Next Auth
+
+-   `src/types/user.ts` - Add the following types / interfaces
+
+```tsx
+export type IRegister = Pick<IUser, "email" | "username" | "password">;
+
+export type ICredentials = Pick<IUser, "email" | "password">;
+
+export interface IChangePassword {
+    oldPassword: string;
+    newPassword: string;
+}
+```
+
+-   `src/pages/api/auth/[...nextauth].ts` - Setup API routes for auth through Next Auth
+
+```tsx
+import mongoose from "@/data/init";
+
+import NextAuth from "next-auth";
+import Providers from "next-auth/providers";
+import bcrypt from "bcryptjs";
+import { ICredentials } from "@/types/user";
+
+const User = mongoose.model("User");
+
+console.log("User", User);
+
+export default NextAuth({
+    session: {
+        jwt: true,
+        maxAge: 60 * 60 * 24 * 30,
+    },
+    providers: [
+        Providers.Credentials({
+            async authorize({ email, password }: ICredentials) {
+                // find user by email
+                const user = await User.findOne({ email });
+
+                // if user not found, throw error
+                if (!user) {
+                    throw new Error("User not found");
+                }
+
+                // compare login password and user's actual (hashed) password
+                const isPasswordValid = await bcrypt.compare(
+                    password,
+                    user.password
+                );
+
+                // if password is invalid, throw error
+                if (!isPasswordValid) {
+                    throw new Error("Invalid password");
+                }
+
+                // return user's claims (for some reason, the claims does not accept extra parameters like username and role)
+                const claims = {
+                    email: user.email,
+                    username: user.username,
+                    role: user.role,
+                };
+
+                return claims;
+            },
+        }),
+    ],
+});
+```
+
+## Step 29: Implement login in the frontend
+
+-   `src/components/auth/auth-form.tsx`
+-   Add the necessary imports
+
+```tsx
+import { signIn } from "next-auth/client";
+import { useRouter } from "next/router";
+```
+
+-   Get the router for programmatic navigation. Add the code to handle login.
+
+```tsx
+function AuthForm() {
+    const router = useRouter();
+
+    // ...more code
+
+    async function submitHandler(event: React.FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+
+        try {
+            // registration
+            // ...code handling registration
+
+            // login
+            if (isLogin) {
+                const result = await signIn("credentials", {
+                    redirect: false,
+                    email,
+                    password,
+                });
+
+                if (result && result.error === null) {
+                    router.push("/products");
+                } else {
+                    alert("Login failed");
+                }
+            }
+        } catch (error) {
+            alert((error as Error).message);
+        }
+    }
+
+    // ...more code
+}
+```
+
+-   You will find yourself redirected to /products on successful login. Observe the changes in the main navigation as well.
+
+## Step 30: Handling logout
+
+-   `src/components/main-navigation/main-navigation.tsx`
+-   Add the necessary imports
+
+```tsx
+import { useSession, signOut } from "next-auth/client";
+```
+
+-   Make code changes to handle click of "Logout"
+
+```tsx
+const handleCloseUserMenu = async (href?: string) => {
+    if (!href) {
+        return setAnchorElUser(null);
+    }
+
+    if (href === "/logout") {
+        await signOut();
+        window.location.href = "/auth";
+        return;
+    }
+
+    router.push(href);
+};
+```
+
+## Step 31: Preventing navigation to login page once logged in
+
+-   `src/components/auth/auth-form.tsx`
+-   Add the necessary imports
+
+```tsx
+import { useState, useEffect } from "react";
+import { signIn, getSession } from "next-auth/client";
+import { useRouter } from "next/router";
+```
+
+-   Add this code just before your return the form UI
+
+```tsx
+// prevent navigation to this page if session exists
+const [isLoading, setIsLoading] = useState(true);
+
+useEffect(() => {
+    getSession({}).then((session) => {
+        if (session) {
+            // bad but a temporray fix for router.push() giving problems
+            window.location.href = "/profile";
+        } else {
+            setIsLoading(false);
+        }
+    }, []);
+});
+
+if (isLoading) {
+    return (
+        <Box
+            sx={{
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center",
+                mx: 4,
+            }}
+        >
+            Loading...
+        </Box>
+    );
+}
+
+// return the actual form UI
+// ...
+```
+
+### Step 32: Adding `change-password` API route, and the profile page which enables user to change password in the frontend
+
+-   `src/pages/api/user/change-password.ts`- Setup as API route to change password (just like user registration, such user management functions are not part of Next Auth)
+-   **Note**: This API is protected (user needs to be authentcated in order to use this API). Such API protection is enabled using getSession() of Next Auth - yes, this method works on the client-side as well as the server-side.
+
+```tsx
+import mongoose from "@/data/init";
+import { NextApiRequest, NextApiResponse } from "next";
+import { getSession } from "next-auth/client";
+import bcrypt from "bcryptjs";
+
+const User = mongoose.model("User");
+
+async function handler(req: NextApiRequest, res: NextApiResponse) {
+    if (req.method !== "PATCH") {
+        return;
+    }
+
+    const session = await getSession({ req: req });
+
+    if (!session) {
+        res.status(401).json({ message: "Not authenticated!" });
+        return;
+    }
+
+    const email = session.user?.email;
+    const oldPassword = req.body.oldPassword;
+    const newPassword = req.body.newPassword;
+
+    try {
+        const user = await User.findOne({ email });
+
+        if (!user) {
+            res.status(404).json({ message: "User not found!" });
+            return;
+        }
+
+        const isPasswordValid = await bcrypt.compare(
+            oldPassword,
+            user.password
+        );
+
+        if (!isPasswordValid) {
+            res.status(403).json({ message: "Invalid password!" });
+            return;
+        }
+
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+        const updatedUser = await User.findOneAndUpdate(
+            { email },
+            { password: hashedPassword },
+            { new: true }
+        );
+
+        res.status(200).json({ message: "Password updated successfully!" });
+    } catch (error) {
+        res.status(500).json({ message: "An error occurred!" });
+    }
+}
+
+export default handler;
+```
+
+-   `src/services/user.ts` - Add a frontend API service method used to call this API. Note that the necessary type was created earlier as part of another unrelated step.
+
+```tsx
+import { IChangePassword } from "@/types/user";
+import axios from "axios";
+
+type IRegisterResponse = {
+    message: string;
+};
+
+export async function changePassword(passwordData: IChangePassword) {
+    const response = await axios.patch<IRegisterResponse>(
+        "/api/user/change-password",
+        passwordData,
+        {
+            headers: {
+                "Content-Type": "application/json",
+            },
+        }
+    );
+
+    return response.data;
+}
+```
+
+-   `src/components/profile/profile-form.tsx`
+
+```tsx
+import { useState, useEffect } from "react";
+import { useRouter } from "next/router";
+import { getSession } from "next-auth/client";
+import { changePassword } from "@/services/user";
+import { Box, Button, TextField } from "@mui/material";
+
+function ProfileForm() {
+    const router = useRouter();
+
+    const [oldPassword, setOldPassword] = useState("");
+    const [newPassword, setNewPassword] = useState("");
+
+    async function submitHandler(event: React.FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+
+        try {
+            const response = await changePassword({ oldPassword, newPassword });
+
+            setOldPassword("");
+            setNewPassword("");
+            alert("Password has been updated");
+        } catch (error) {
+            alert("Password has not been updated");
+        }
+    }
+
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+        getSession({}).then((session) => {
+            if (!session) {
+                // window.location.href = "/auth";
+                router.push("/auth");
+            } else {
+                setIsLoading(false);
+            }
+        });
+    }, []);
+
+    if (isLoading) {
+        return (
+            <Box
+                sx={{
+                    display: "flex",
+                    justifyContent: "center",
+                    alignItems: "center",
+                    mx: 4,
+                }}
+            >
+                Loading...
+            </Box>
+        );
+    }
+
+    return (
+        <section>
+            <h1>Change Password</h1>
+            <form onSubmit={submitHandler}>
+                <Box sx={{ my: 2 }}>
+                    <TextField
+                        required
+                        type="password"
+                        id="oldPassword"
+                        name="oldPassword"
+                        label="Old Password"
+                        value={oldPassword}
+                        onChange={(
+                            event: React.ChangeEvent<HTMLInputElement>
+                        ) => setOldPassword(event.target.value)}
+                        sx={{ width: "600px", maxWidth: "100%" }}
+                    />
+                </Box>
+                <Box sx={{ my: 2 }}>
+                    <TextField
+                        required
+                        type="password"
+                        id="newPassword"
+                        name="newPassword"
+                        label="New Password"
+                        value={newPassword}
+                        onChange={(
+                            event: React.ChangeEvent<HTMLInputElement>
+                        ) => setNewPassword(event.target.value)}
+                        sx={{ width: "600px", maxWidth: "100%" }}
+                    />
+                </Box>
+                <Box sx={{ my: 2 }}>
+                    <Button variant="outlined" type="submit">
+                        Change password
+                    </Button>
+                </Box>
+            </form>
+        </section>
+    );
+}
+
+export default ProfileForm;
+```
+
+-   `src/pages/profile.tsx` - Create the page component that renders the profile form component
+
+```tsx
+import Head from "next/head";
+import ProfileForm from "@/components/profile/profile-form";
+
+const ProfilePage = () => {
+    return (
+        <>
+            <Head>
+                <title>My profile</title>
+                <meta name="description" content="User profile information" />
+            </Head>
+
+            <ProfileForm />
+        </>
+    );
+};
+
+export default ProfilePage;
+```
+
+-   An additional way to prevent navigation to a route is via `getServerSideProps()` that checks if the request is associated with a session, and if not, prevents navigation to the profile page. If you implement this, you can remove the corresponding check (that uses `loading` and `getSession()` inside a `useEffect()`).
+-   `src/pages/profile.tsx`
+-   Add the necessary imports
+
+```tsx
+import { NextPageContext } from "next";
+import { getSession } from "next-auth/client";
+```
+
+-   Add session check in `getServerSideProps()`
+
+```tsx
+// NOTE: This is the server-side alternative to the useEffect() to protect the /profile route in the Profile component
+export const getServerSideProps = async (context: NextPageContext) => {
+    const session = await getSession({ req: context.req });
+
+    if (!session) {
+        return {
+            redirect: {
+                destination: "/auth",
+                permanent: false,
+            },
+        };
+    }
+
+    return {
+        props: { session },
+    };
+};
+```
+
+## Step 33: Adding a review
 
 -   `src/data/services/reviews.ts` - Backend service to add a review for a product with given `_id`
 
@@ -2333,7 +2961,7 @@ export const createReview = async (_id: string, review: IReview) => {
 };
 ```
 
--   `src/pages/api/products/[_id]/reviews.ts` - Add API for adding a review for a product with given `_id`
+-   `src/pages/api/products/[_id]/reviews.ts` - Add API for adding a review for a product with given `_id`. Note how we protect this API using `getSession()`
 
 ```ts
 import type { NextApiHandler, NextApiRequest, NextApiResponse } from "next";
@@ -2393,11 +3021,109 @@ export default handler;
 -   `src/services/reviews.ts`
 
 ```ts
+import axios from "axios";
+import { IReview } from "../types/product";
 
+type IPostReviewResponse = {
+    status: "success" | "error";
+    message: IReview[];
+};
+
+export const postReview = async (
+    productId: string,
+    review: Partial<IReview>
+) => {
+    const response = await axios.post<IPostReviewResponse>(
+        `/api/products/${productId}/reviews`,
+        review,
+        {
+            headers: {
+                "Content-Type": "application/json",
+            },
+        }
+    );
+    return response.data;
+};
 ```
 
 -   `src/components/product-details/add-review/add-review.tsx`
 
 ```tsx
+import { useState } from "react";
+import { useRouter } from "next/router";
+import Rating from "@mui/material/Rating";
+import TextField from "@mui/material/TextField";
+import Button from "@mui/material/Button";
+import Box from "@mui/material/Box";
+import { Divider, Typography } from "@mui/material";
+import { postReview } from "@/services/reviews";
 
+type Props = {
+    productId: string | undefined;
+};
+
+const AddReview = ({ productId }: Props) => {
+    const router = useRouter();
+
+    const [rating, setRating] = useState(0);
+    const [text, setText] = useState("");
+
+    const handleRatingChange = (
+        event: React.SyntheticEvent<Element, Event>,
+        newValue: number | null
+    ) => {
+        setRating(newValue || 0);
+    };
+
+    const handleTextChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        setText(event.target.value);
+    };
+
+    const handleAddReview = async (event: React.FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+
+        try {
+            const reviews = await postReview(productId, {
+                rating,
+                text,
+            });
+            router.push(`/products/${productId}`);
+        } catch (error) {
+            alert(`Failed to add review: ${(error as Error).message}`);
+        }
+    };
+
+    return (
+        <Box>
+            <Typography variant="h6" component="h2">
+                Add a review
+            </Typography>
+            <Divider sx={{ my: 2 }} />
+            <form onSubmit={handleAddReview}>
+                <div>
+                    <Rating value={rating} onChange={handleRatingChange} />
+                </div>
+                <div>
+                    <TextField
+                        multiline
+                        maxRows={4}
+                        value={text}
+                        onChange={handleTextChange}
+                    />
+                </div>
+                <div>
+                    <Button type="submit">Add review</Button>
+                </div>
+            </form>
+        </Box>
+    );
+};
+
+export default AddReview;
+```
+
+-   `src/components/product-detail/product-detail.tsx` Pass on the `productId` prop to `AddReview`
+
+```tsx
+el = <AddReview productId={_idRouter[0]} />;
 ```
