@@ -30,6 +30,12 @@ Building Mantra Store (an online store) using the Pages Router
 npx create-next-app mantra-store
 ```
 
+If you find issues with the Node JS version, you may use an older version of create-next-app
+
+```
+npx create-next-app@13 mantra-store
+```
+
 -   Answer the questions asked like so
 
 ```
