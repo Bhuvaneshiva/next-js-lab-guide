@@ -764,6 +764,20 @@ import Image from "next/image";
 </ImageListItem>
 ```
 
+-   `next.config.mjs`- You also need to add the following to support images from xternal domains
+
+```js
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+    reactStrictMode: true,
+    images: {
+        domains: ["fakestoreapi.com", "images.unsplash.com"],
+    },
+};
+
+export default nextConfig;
+```
+
 -   Observe the difference in look. Apart from this all optimizations are enabled.
 
 ## Step 12: Understanding Rendering models - mainly SSG
