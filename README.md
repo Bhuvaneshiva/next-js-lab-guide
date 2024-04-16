@@ -2692,8 +2692,8 @@ useEffect(() => {
         } else {
             setIsLoading(false);
         }
-    }, []);
-});
+    });
+}, []);
 
 if (isLoading) {
     return (
